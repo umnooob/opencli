@@ -22,12 +22,16 @@ export type BrowserBridgeState = 'idle' | 'connecting' | 'connected' | 'closing'
 /**
  * Browser factory: manages daemon lifecycle and provides IPage instances.
  */
+interface LaunchResult {
+  connected: boolean;
+  detected: string[];
+  tried: string[];
+}
+
 export class BrowserBridge implements IBrowserFactory {
   private _state: BrowserBridgeState = 'idle';
   private _page: Page | null = null;
   private _daemonProc: ChildProcess | null = null;
-  private _lastDetectedBrowsers: string[] = [];
-  private _lastTriedBrowsers: string[] = [];
   private _inferredBrowserName: string | null = null;
 
   get state(): BrowserBridgeState {
@@ -82,8 +86,9 @@ export class BrowserBridge implements IBrowserFactory {
       if (process.env.OPENCLI_VERBOSE || process.stderr.isTTY) {
         process.stderr.write('⏳ Waiting for Browser Bridge extension to connect...\n');
       }
-      if (await this._tryLaunchBrowsers(timeoutMs)) return;
-      throw new Error(this._buildExtensionError(this._lastDetectedBrowsers, this._lastTriedBrowsers));
+      const result = await this._tryLaunchBrowsers(timeoutMs);
+      if (result.connected) return;
+      throw new Error(this._buildExtensionError(result.detected, result.tried));
     }
 
     // No daemon — spawn one
@@ -110,10 +115,11 @@ export class BrowserBridge implements IBrowserFactory {
     this._daemonProc.unref();
 
     // Wait for daemon + extension with faster polling
-    if (await this._tryLaunchBrowsers(timeoutMs)) return;
+    const result = await this._tryLaunchBrowsers(timeoutMs);
+    if (result.connected) return;
 
     if ((await fetchDaemonStatus()) !== null) {
-      throw new Error(this._buildExtensionError(this._lastDetectedBrowsers, this._lastTriedBrowsers));
+      throw new Error(this._buildExtensionError(result.detected, result.tried));
     }
 
     throw new Error(
@@ -123,19 +129,22 @@ export class BrowserBridge implements IBrowserFactory {
     );
   }
 
-  private async _tryLaunchBrowsers(timeoutMs: number): Promise<boolean> {
+  private async _tryLaunchBrowsers(timeoutMs: number): Promise<LaunchResult> {
     const candidates = getBrowserCandidates();
-    this._lastDetectedBrowsers = candidates.map(c => c.name);
-    this._lastTriedBrowsers = [];
+    const detected = candidates.map(c => c.name);
+    const tried: string[] = [];
 
-    if (await isExtensionConnected()) return true;
+    if (await isExtensionConnected()) return { connected: true, detected, tried };
 
     const deadline = Date.now() + timeoutMs;
+    const perBrowserWaitMs = candidates.length > 0
+      ? Math.min(MAX_PER_BROWSER_WAIT_MS, Math.max(EXTENSION_POLL_INTERVAL_MS, Math.floor(timeoutMs / candidates.length)))
+      : timeoutMs;
 
     for (const candidate of candidates) {
       if (Date.now() >= deadline) break;
 
-      this._lastTriedBrowsers.push(candidate.name);
+      tried.push(candidate.name);
       if (process.env.OPENCLI_VERBOSE || process.stderr.isTTY) {
         process.stderr.write(`   Trying browser: ${candidate.name}\n`);
       }
@@ -144,21 +153,23 @@ export class BrowserBridge implements IBrowserFactory {
         await launchBrowserCandidate(candidate);
         if (await isExtensionConnected()) {
           this._inferredBrowserName = candidate.name;
-          return true;
+          return { connected: true, detected, tried };
         }
       }
 
-      const waitMs = Math.min(MAX_PER_BROWSER_WAIT_MS, Math.max(0, deadline - Date.now()));
+      const waitMs = Math.min(perBrowserWaitMs, Math.max(0, deadline - Date.now()));
       if (waitMs > 0 && await this._waitForExtensionConnection(waitMs)) {
         this._inferredBrowserName = candidate.name;
-        return true;
+        return { connected: true, detected, tried };
       }
     }
 
     // Use any remaining time for a final wait
     const remaining = Math.max(0, deadline - Date.now());
-    if (remaining > 0 && await this._waitForExtensionConnection(remaining)) return true;
-    return false;
+    if (remaining > 0 && await this._waitForExtensionConnection(remaining)) {
+      return { connected: true, detected, tried };
+    }
+    return { connected: false, detected, tried };
   }
 
   private async _waitForExtensionConnection(timeoutMs: number): Promise<boolean> {

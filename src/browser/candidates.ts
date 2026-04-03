@@ -50,7 +50,7 @@ const BROWSER_DEFS: BrowserDef[] = [
     macAppName: 'Chromium',
     linuxBins: ['chromium', 'chromium-browser'],
     winExeParts: [['Chromium', 'Application', 'chrome.exe']],
-    processNames: ['Chromium', 'chromium', 'chromium-browser', 'chrome.exe'],
+    processNames: ['Chromium', 'chromium', 'chromium-browser'],
   },
 ];
 
@@ -135,7 +135,7 @@ export function getBrowserCandidates(): BrowserCandidate[] {
 }
 
 export async function launchBrowserCandidate(candidate: BrowserCandidate): Promise<void> {
-  const opts = { detached: true as const, stdio: 'ignore' as const, env: { ...process.env } };
+  const opts = { detached: true as const, stdio: 'ignore' as const };
 
   const cmd = process.platform === 'darwin'
     ? { bin: 'open', args: [candidate.executable] }
