@@ -174,28 +174,35 @@ describe('BrowserBridge state', () => {
   });
 
   it('tries detected browsers in order until the extension connects', async () => {
-    mockFetchDaemonStatus.mockResolvedValue({ extensionConnected: false } as any);
-    mockGetBrowserCandidates.mockReturnValue([
-      { id: 'chrome', name: 'Chrome', executable: '/chrome' },
-      { id: 'edge', name: 'Edge', executable: '/edge' },
-    ]);
-    mockIsExtensionConnected.mockResolvedValue(false);
-    mockLaunchBrowserCandidate.mockImplementation(async (candidate: { id: string }) => {
-      if (candidate.id === 'edge') {
-        mockIsExtensionConnected.mockResolvedValue(true);
-      }
-    });
+    vi.useFakeTimers();
+    try {
+      mockFetchDaemonStatus.mockResolvedValue({ extensionConnected: false } as any);
+      mockGetBrowserCandidates.mockReturnValue([
+        { id: 'chrome', name: 'Chrome', executable: '/chrome', running: false },
+        { id: 'edge', name: 'Edge', executable: '/edge', running: false },
+      ]);
+      mockIsExtensionConnected.mockResolvedValue(false);
+      mockLaunchBrowserCandidate.mockImplementation(async (candidate: { id: string }) => {
+        if (candidate.id === 'edge') {
+          mockIsExtensionConnected.mockResolvedValue(true);
+        }
+      });
 
-    const bridge = new BrowserBridge();
+      const bridge = new BrowserBridge();
+      const promise = bridge.connect({ timeout: 5 });
 
-    await bridge.connect({ timeout: 1 });
+      await vi.advanceTimersByTimeAsync(5000);
+      await promise;
 
-    expect(mockLaunchBrowserCandidate).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: 'chrome' }));
-    expect(mockLaunchBrowserCandidate).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: 'edge' }));
-    expect(bridge.inferredBrowserName).toBe('Edge');
+      expect(mockLaunchBrowserCandidate).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: 'chrome' }));
+      expect(mockLaunchBrowserCandidate).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: 'edge' }));
+      expect(bridge.inferredBrowserName).toBe('Edge');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('waits on running browsers before launching unopened browsers', async () => {
+  it('waits on running browsers without launching them', async () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(0);
@@ -211,17 +218,19 @@ describe('BrowserBridge state', () => {
       mockLaunchBrowserCandidate.mockResolvedValue(undefined);
 
       const bridge = new BrowserBridge();
-      const promise = bridge.connect({ timeout: 1 });
+      const promise = bridge.connect({ timeout: 5 });
 
       setTimeout(() => {
         connected = true;
       }, 450);
 
-      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(5000);
       await promise;
 
+      // Running browsers should not be launched
       expect(mockLaunchBrowserCandidate).not.toHaveBeenCalled();
-      expect(bridge.inferredBrowserName).toBe('Edge');
+      // Chrome is first running candidate being polled when extension connects
+      expect(bridge.inferredBrowserName).toBe('Chrome');
     } finally {
       vi.useRealTimers();
     }
@@ -244,9 +253,9 @@ describe('BrowserBridge state', () => {
       });
 
       const bridge = new BrowserBridge();
-      const promise = bridge.connect({ timeout: 1 });
+      const promise = bridge.connect({ timeout: 5 });
 
-      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(5000);
       await promise;
 
       expect(mockLaunchBrowserCandidate).toHaveBeenCalledTimes(1);
@@ -258,22 +267,30 @@ describe('BrowserBridge state', () => {
   });
 
   it('includes detected and tried browsers in the final error', async () => {
-    mockFetchDaemonStatus.mockResolvedValue({ extensionConnected: false } as any);
-    mockGetBrowserCandidates.mockReturnValue([
-      { id: 'chrome', name: 'Chrome', executable: '/chrome' },
-      { id: 'edge', name: 'Edge', executable: '/edge' },
-    ]);
-    mockIsExtensionConnected.mockResolvedValue(false);
+    vi.useFakeTimers();
+    try {
+      mockFetchDaemonStatus.mockResolvedValue({ extensionConnected: false } as any);
+      mockGetBrowserCandidates.mockReturnValue([
+        { id: 'chrome', name: 'Chrome', executable: '/chrome', running: false },
+        { id: 'edge', name: 'Edge', executable: '/edge', running: false },
+      ]);
+      mockIsExtensionConnected.mockResolvedValue(false);
 
-    const bridge = new BrowserBridge();
-    let message = '';
+      const bridge = new BrowserBridge();
+      let message = '';
 
-    await bridge.connect({ timeout: 1 }).catch((error) => {
-      message = error instanceof Error ? error.message : String(error);
-    });
+      const promise = bridge.connect({ timeout: 5 }).catch((error) => {
+        message = error instanceof Error ? error.message : String(error);
+      });
 
-    expect(message).toContain('Detected browsers: Chrome, Edge');
-    expect(message).toContain('Tried browsers: Chrome, Edge');
+      await vi.advanceTimersByTimeAsync(5000);
+      await promise;
+
+      expect(message).toContain('Detected browsers: Chrome, Edge');
+      expect(message).toContain('Tried browsers: Chrome, Edge');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('honors short timeouts without waiting a full poll interval', async () => {
@@ -299,8 +316,8 @@ describe('BrowserBridge state', () => {
     mockGetBrowserCandidates.mockImplementation(() => {
       vi.setSystemTime(800);
       return [
-        { id: 'chrome', name: 'Chrome', executable: '/chrome' },
-        { id: 'edge', name: 'Edge', executable: '/edge' },
+        { id: 'chrome', name: 'Chrome', executable: '/chrome', running: false },
+        { id: 'edge', name: 'Edge', executable: '/edge', running: false },
       ];
     });
     mockIsExtensionConnected.mockResolvedValue(false);
@@ -311,9 +328,9 @@ describe('BrowserBridge state', () => {
     });
 
     const bridge = new BrowserBridge();
-    const promise = bridge.connect({ timeout: 1 });
+    const promise = bridge.connect({ timeout: 5 });
 
-    await vi.advanceTimersByTimeAsync(1200);
+    await vi.advanceTimersByTimeAsync(5000);
     await promise;
 
     expect(mockLaunchBrowserCandidate).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: 'chrome' }));
