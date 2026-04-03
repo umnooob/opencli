@@ -217,7 +217,10 @@ function main() {
   console.log('  \x1b[1mNext step — Browser Bridge setup\x1b[0m');
   console.log('  Browser commands (bilibili, zhihu, twitter...) require the extension:');
   console.log('  1. Download: https://github.com/jackwener/opencli/releases');
-  console.log('  2. In Chrome or Chromium, open chrome://extensions → enable Developer Mode → Load unpacked');
+  console.log('  2. In a Chromium-based browser, open the extensions page:');
+  console.log('     - Chrome: chrome://extensions');
+  console.log('     - Edge: edge://extensions');
+  console.log('     Enable Developer Mode → Load unpacked');
   console.log('');
   console.log('  Then run \x1b[36mopencli doctor\x1b[0m to verify.');
   console.log('');

@@ -84,11 +84,13 @@ export async function runBrowserDoctor(opts: DoctorOptions = {}): Promise<Doctor
   }
   if (status.running && !status.extensionConnected) {
     issues.push(
-      'Daemon is running but the Chrome/Chromium extension is not connected.\n' +
+      'Daemon is running but the Browser Bridge extension is not connected.\n' +
       'Please install the opencli Browser Bridge extension:\n' +
       '  1. Download from https://github.com/jackwener/opencli/releases\n' +
-      '  2. Open chrome://extensions/ → Enable Developer Mode\n' +
-      '  3. Click "Load unpacked" → select the extension folder',
+      '  2. In a Chromium-based browser, open the extensions page:\n' +
+      '     - Chrome: chrome://extensions\n' +
+      '     - Edge: edge://extensions\n' +
+      '  3. Enable Developer Mode → Click "Load unpacked" → select the extension folder',
     );
   }
   if (connectivity && !connectivity.ok) {

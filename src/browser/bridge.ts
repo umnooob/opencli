@@ -10,9 +10,12 @@ import type { IPage } from '../types.js';
 import type { IBrowserFactory } from '../runtime.js';
 import { Page } from './page.js';
 import { fetchDaemonStatus, isExtensionConnected } from './daemon-client.js';
+import { getBrowserCandidates, launchBrowserCandidate } from './candidates.js';
 import { DEFAULT_DAEMON_PORT } from '../constants.js';
 
 const DAEMON_SPAWN_TIMEOUT = 10000; // 10s to wait for daemon + extension
+const EXTENSION_POLL_INTERVAL_MS = 200;
+const MAX_PER_BROWSER_WAIT_MS = 2000;
 
 export type BrowserBridgeState = 'idle' | 'connecting' | 'connected' | 'closing' | 'closed';
 
@@ -23,6 +26,8 @@ export class BrowserBridge implements IBrowserFactory {
   private _state: BrowserBridgeState = 'idle';
   private _page: Page | null = null;
   private _daemonProc: ChildProcess | null = null;
+  private _lastDetectedBrowsers: string[] = [];
+  private _lastTriedBrowsers: string[] = [];
 
   get state(): BrowserBridgeState {
     return this._state;
@@ -69,18 +74,10 @@ export class BrowserBridge implements IBrowserFactory {
     // Daemon running but no extension — wait for extension with progress
     if (status !== null) {
       if (process.env.OPENCLI_VERBOSE || process.stderr.isTTY) {
-        process.stderr.write('⏳ Waiting for Chrome/Chromium extension to connect...\n');
-        process.stderr.write('   Make sure Chrome or Chromium is open and the OpenCLI extension is enabled.\n');
+        process.stderr.write('⏳ Waiting for Browser Bridge extension to connect...\n');
       }
-      const deadline = Date.now() + timeoutMs;
-      while (Date.now() < deadline) {
-        await new Promise(resolve => setTimeout(resolve, 200));
-        if (await isExtensionConnected()) return;
-      }
-      throw new Error(
-        'Daemon is running but the Browser Extension is not connected.\n' +
-        'Please install and enable the opencli Browser Bridge extension in Chrome or Chromium.',
-      );
+      if (await this._tryLaunchBrowsers(timeoutMs)) return;
+      throw new Error(this._buildExtensionError(this._lastDetectedBrowsers, this._lastTriedBrowsers));
     }
 
     // No daemon — spawn one
@@ -107,23 +104,72 @@ export class BrowserBridge implements IBrowserFactory {
     this._daemonProc.unref();
 
     // Wait for daemon + extension with faster polling
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      await new Promise(resolve => setTimeout(resolve, 200));
-      if (await isExtensionConnected()) return;
-    }
+    if (await this._tryLaunchBrowsers(timeoutMs)) return;
 
     if ((await fetchDaemonStatus()) !== null) {
-      throw new Error(
-        'Daemon is running but the Browser Extension is not connected.\n' +
-        'Please install and enable the opencli Browser Bridge extension in Chrome or Chromium.',
-      );
+      throw new Error(this._buildExtensionError(this._lastDetectedBrowsers, this._lastTriedBrowsers));
     }
 
     throw new Error(
       'Failed to start opencli daemon. Try running manually:\n' +
       `  node ${daemonPath}\n` +
       `Make sure port ${DEFAULT_DAEMON_PORT} is available.`,
+    );
+  }
+
+  private async _tryLaunchBrowsers(timeoutMs: number): Promise<boolean> {
+    const candidates = getBrowserCandidates();
+    this._lastDetectedBrowsers = candidates.map(candidate => candidate.name);
+    this._lastTriedBrowsers = [];
+
+    if (await isExtensionConnected()) return true;
+    const startedAt = Date.now();
+
+    const perBrowserWaitMs = candidates.length > 0
+      ? Math.min(MAX_PER_BROWSER_WAIT_MS, Math.max(EXTENSION_POLL_INTERVAL_MS, Math.floor(timeoutMs / candidates.length)))
+      : timeoutMs;
+
+    for (const candidate of candidates) {
+      this._lastTriedBrowsers.push(candidate.name);
+      if (process.env.OPENCLI_VERBOSE || process.stderr.isTTY) {
+        process.stderr.write(`   Trying browser: ${candidate.name}\n`);
+      }
+      await launchBrowserCandidate(candidate);
+      if (await isExtensionConnected()) return true;
+      const remainingMs = Math.max(0, timeoutMs - (Date.now() - startedAt));
+      if (remainingMs <= 0) break;
+      if (await this._waitForExtensionConnection(Math.min(perBrowserWaitMs, remainingMs))) return true;
+    }
+
+    const remainingMs = Math.max(0, timeoutMs - (Date.now() - startedAt));
+    if (remainingMs > 0 && await this._waitForExtensionConnection(remainingMs)) return true;
+    return false;
+  }
+
+  private async _waitForExtensionConnection(timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const sleepMs = Math.min(EXTENSION_POLL_INTERVAL_MS, Math.max(0, deadline - Date.now()));
+      if (sleepMs <= 0) break;
+      await new Promise(resolve => setTimeout(resolve, sleepMs));
+      if (await isExtensionConnected()) return true;
+    }
+    return false;
+  }
+
+  private _buildExtensionError(
+    detected: string[],
+    tried: string[],
+  ): string {
+    const detectedText = detected.length > 0 ? detected.join(', ') : 'none';
+    const triedText = tried.length > 0 ? tried.join(', ') : 'none';
+    return (
+      'Daemon is running but the Browser Extension is not connected.\n' +
+      `Detected browsers: ${detectedText}\n` +
+      `Tried browsers: ${triedText}\n` +
+      'Please install and enable the opencli Browser Bridge extension in a Chromium-based browser.\n' +
+      '  Chrome: chrome://extensions\n' +
+      '  Edge: edge://extensions'
     );
   }
 }

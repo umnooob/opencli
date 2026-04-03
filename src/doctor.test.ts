@@ -59,7 +59,7 @@ describe('doctor report rendering', () => {
     const text = strip(renderBrowserDoctorReport({
       daemonRunning: true,
       extensionConnected: false,
-      issues: ['Daemon is running but the Chrome extension is not connected.'],
+      issues: ['Daemon is running but the Browser Bridge extension is not connected.'],
     }));
 
     expect(text).toContain('[OK] Daemon: running on port 19825');
@@ -107,5 +107,16 @@ describe('doctor report rendering', () => {
     expect(report.issues).toEqual(expect.arrayContaining([
       expect.stringContaining('Daemon is not running'),
     ]));
+  });
+
+  it('mentions Chromium-based extension install hints when daemon is running but extension is disconnected', async () => {
+    mockCheckDaemonStatus.mockResolvedValue({ running: true, extensionConnected: false });
+
+    const report = await runBrowserDoctor({ live: false });
+
+    const text = report.issues.join('\n');
+    expect(text).toContain('Chromium-based');
+    expect(text).toContain('chrome://extensions');
+    expect(text).toContain('edge://extensions');
   });
 });

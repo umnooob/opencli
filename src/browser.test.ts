@@ -1,10 +1,31 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+const {
+  mockFetchDaemonStatus,
+  mockIsExtensionConnected,
+  mockGetBrowserCandidates,
+  mockLaunchBrowserCandidate,
+} = vi.hoisted(() => ({
+  mockFetchDaemonStatus: vi.fn(),
+  mockIsExtensionConnected: vi.fn(),
+  mockGetBrowserCandidates: vi.fn(),
+  mockLaunchBrowserCandidate: vi.fn(),
+}));
+
+vi.mock('./browser/daemon-client.js', () => ({
+  fetchDaemonStatus: mockFetchDaemonStatus,
+  isExtensionConnected: mockIsExtensionConnected,
+}));
+
+vi.mock('./browser/candidates.js', () => ({
+  getBrowserCandidates: mockGetBrowserCandidates,
+  launchBrowserCandidate: mockLaunchBrowserCandidate,
+}));
+
 import { BrowserBridge, generateStealthJs } from './browser/index.js';
 import { extractTabEntries, diffTabIndexes, appendLimited } from './browser/tabs.js';
 import { withTimeoutMs } from './runtime.js';
 import { __test__ as cdpTest } from './browser/cdp.js';
 import { isRetryableSettleError } from './browser/page.js';
-import * as daemonClient from './browser/daemon-client.js';
 
 describe('browser helpers', () => {
   it('extracts tab entries from string snapshots', () => {
@@ -103,6 +124,14 @@ describe('browser helpers', () => {
 });
 
 describe('BrowserBridge state', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockFetchDaemonStatus.mockReset();
+    mockIsExtensionConnected.mockReset();
+    mockGetBrowserCandidates.mockReset();
+    mockLaunchBrowserCandidate.mockReset();
+  });
+
   it('transitions to closed after close()', async () => {
     const bridge = new BrowserBridge();
 
@@ -135,12 +164,99 @@ describe('BrowserBridge state', () => {
   });
 
   it('fails fast when daemon is running but extension is disconnected', async () => {
-    vi.spyOn(daemonClient, 'isExtensionConnected').mockResolvedValue(false);
-    vi.spyOn(daemonClient, 'fetchDaemonStatus').mockResolvedValue({ extensionConnected: false } as any);
+    mockFetchDaemonStatus.mockResolvedValue({ extensionConnected: false } as any);
+    mockIsExtensionConnected.mockResolvedValue(false);
+    mockGetBrowserCandidates.mockReturnValue([]);
 
     const bridge = new BrowserBridge();
 
     await expect(bridge.connect({ timeout: 0.1 })).rejects.toThrow('Browser Extension is not connected');
+  });
+
+  it('tries detected browsers in order until the extension connects', async () => {
+    mockFetchDaemonStatus.mockResolvedValue({ extensionConnected: false } as any);
+    mockGetBrowserCandidates.mockReturnValue([
+      { id: 'chrome', name: 'Chrome', executable: '/chrome' },
+      { id: 'edge', name: 'Edge', executable: '/edge' },
+    ]);
+    mockIsExtensionConnected.mockResolvedValue(false);
+    mockLaunchBrowserCandidate.mockImplementation(async (candidate: { id: string }) => {
+      if (candidate.id === 'edge') {
+        mockIsExtensionConnected.mockResolvedValue(true);
+      }
+    });
+
+    const bridge = new BrowserBridge();
+
+    await bridge.connect({ timeout: 1 });
+
+    expect(mockLaunchBrowserCandidate).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: 'chrome' }));
+    expect(mockLaunchBrowserCandidate).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: 'edge' }));
+  });
+
+  it('includes detected and tried browsers in the final error', async () => {
+    mockFetchDaemonStatus.mockResolvedValue({ extensionConnected: false } as any);
+    mockGetBrowserCandidates.mockReturnValue([
+      { id: 'chrome', name: 'Chrome', executable: '/chrome' },
+      { id: 'edge', name: 'Edge', executable: '/edge' },
+    ]);
+    mockIsExtensionConnected.mockResolvedValue(false);
+
+    const bridge = new BrowserBridge();
+    let message = '';
+
+    await bridge.connect({ timeout: 1 }).catch((error) => {
+      message = error instanceof Error ? error.message : String(error);
+    });
+
+    expect(message).toContain('Detected browsers: Chrome, Edge');
+    expect(message).toContain('Tried browsers: Chrome, Edge');
+  });
+
+  it('honors short timeouts without waiting a full poll interval', async () => {
+    vi.useFakeTimers();
+    mockFetchDaemonStatus.mockResolvedValue({ extensionConnected: false } as any);
+    mockGetBrowserCandidates.mockReturnValue([]);
+    mockIsExtensionConnected.mockResolvedValue(false);
+
+    const bridge = new BrowserBridge();
+    const promise = bridge.connect({ timeout: 0.05 });
+    const rejection = expect(promise).rejects.toThrow('Browser Extension is not connected');
+
+    await vi.advanceTimersByTimeAsync(60);
+    await rejection;
+
+    vi.useRealTimers();
+  });
+
+  it('does not count browser discovery time against trying later browsers', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    mockFetchDaemonStatus.mockResolvedValue({ extensionConnected: false } as any);
+    mockGetBrowserCandidates.mockImplementation(() => {
+      vi.setSystemTime(800);
+      return [
+        { id: 'chrome', name: 'Chrome', executable: '/chrome' },
+        { id: 'edge', name: 'Edge', executable: '/edge' },
+      ];
+    });
+    mockIsExtensionConnected.mockResolvedValue(false);
+    mockLaunchBrowserCandidate.mockImplementation(async (candidate: { id: string }) => {
+      if (candidate.id === 'edge') {
+        mockIsExtensionConnected.mockResolvedValue(true);
+      }
+    });
+
+    const bridge = new BrowserBridge();
+    const promise = bridge.connect({ timeout: 1 });
+
+    await vi.advanceTimersByTimeAsync(1200);
+    await promise;
+
+    expect(mockLaunchBrowserCandidate).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: 'chrome' }));
+    expect(mockLaunchBrowserCandidate).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: 'edge' }));
+
+    vi.useRealTimers();
   });
 });
 
